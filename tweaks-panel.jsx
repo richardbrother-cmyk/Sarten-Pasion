@@ -47,6 +47,16 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const __TWEAKS_STYLE = `
+  .twk-fab{position:fixed;right:16px;bottom:16px;z-index:2147483646;
+    width:42px;height:42px;display:flex;align-items:center;justify-content:center;
+    transform:scale(var(--dc-inv-zoom,1));transform-origin:bottom right;
+    background:rgba(250,249,247,.78);color:#29261b;
+    -webkit-backdrop-filter:blur(24px) saturate(160%);backdrop-filter:blur(24px) saturate(160%);
+    border:.5px solid rgba(255,255,255,.6);border-radius:50%;cursor:pointer;
+    box-shadow:0 1px 0 rgba(255,255,255,.5) inset,0 8px 24px rgba(0,0,0,.18);
+    transition:transform .15s ease,box-shadow .15s ease}
+  .twk-fab:hover{box-shadow:0 1px 0 rgba(255,255,255,.5) inset,0 10px 30px rgba(0,0,0,.26)}
+  .twk-fab:active{transform:scale(calc(var(--dc-inv-zoom,1) * .94))}
   .twk-panel{position:fixed;right:16px;bottom:16px;z-index:2147483646;width:280px;
     max-height:calc(100vh - 32px);display:flex;flex-direction:column;
     transform:scale(var(--dc-inv-zoom,1));transform-origin:bottom right;
@@ -159,16 +169,41 @@ const __TWEAKS_STYLE = `
 // ── useTweaks ───────────────────────────────────────────────────────────────
 // Single source of truth for tweak values. setTweak persists via the host
 // (__edit_mode_set_keys → host rewrites the EDITMODE block on disk).
+//
+// Standalone mode: when the page is NOT inside the editor iframe (e.g. it has
+// been published to GitHub Pages), there is no host to receive the message or
+// re-open the panel. We detect that with window.self === window.top and fall
+// back to persisting tweaks in localStorage + a self-served toggle button.
+const IS_STANDALONE = (() => {
+  try { return window.self === window.top; } catch (e) { return false; }
+})();
+const TWEAKS_LS_KEY = '__tweaks_standalone';
+
+function readStandaloneTweaks() {
+  try { return JSON.parse(localStorage.getItem(TWEAKS_LS_KEY) || '{}') || {}; }
+  catch (e) { return {}; }
+}
+
 function useTweaks(defaults) {
-  const [values, setValues] = React.useState(defaults);
+  const [values, setValues] = React.useState(
+    () => (IS_STANDALONE ? { ...defaults, ...readStandaloneTweaks() } : defaults),
+  );
   // Accepts either setTweak('key', value) or setTweak({ key: value, ... }) so a
   // useState-style call doesn't write a "[object Object]" key into the persisted
   // JSON block.
   const setTweak = React.useCallback((keyOrEdits, val) => {
     const edits = typeof keyOrEdits === 'object' && keyOrEdits !== null
       ? keyOrEdits : { [keyOrEdits]: val };
-    setValues((prev) => ({ ...prev, ...edits }));
-    window.parent.postMessage({ type: '__edit_mode_set_keys', edits }, '*');
+    setValues((prev) => {
+      const next = { ...prev, ...edits };
+      if (IS_STANDALONE) {
+        try { localStorage.setItem(TWEAKS_LS_KEY, JSON.stringify(next)); } catch (e) {}
+      }
+      return next;
+    });
+    if (!IS_STANDALONE) {
+      window.parent.postMessage({ type: '__edit_mode_set_keys', edits }, '*');
+    }
     // Same-window signal so in-page listeners (deck-stage rail thumbnails)
     // can react — the parent message only reaches the host, not peers.
     window.dispatchEvent(new CustomEvent('tweakchange', { detail: edits }));
@@ -255,13 +290,17 @@ function TweaksPanel({ title = 'Tweaks', noDeckControls = false, children }) {
       else if (t === '__deactivate_edit_mode') setOpen(false);
     };
     window.addEventListener('message', onMsg);
-    window.parent.postMessage({ type: '__edit_mode_available' }, '*');
+    if (!IS_STANDALONE) {
+      window.parent.postMessage({ type: '__edit_mode_available' }, '*');
+    }
     return () => window.removeEventListener('message', onMsg);
   }, []);
 
   const dismiss = () => {
     setOpen(false);
-    window.parent.postMessage({ type: '__edit_mode_dismissed' }, '*');
+    if (!IS_STANDALONE) {
+      window.parent.postMessage({ type: '__edit_mode_dismissed' }, '*');
+    }
   };
 
   const onDragStart = (e) => {
@@ -286,7 +325,24 @@ function TweaksPanel({ title = 'Tweaks', noDeckControls = false, children }) {
     window.addEventListener('mouseup', up);
   };
 
-  if (!open) return null;
+  if (!open) {
+    // In the editor the host's toolbar opens the panel, so render nothing.
+    // Standalone (published) pages have no host — serve our own floating button.
+    if (!IS_STANDALONE) return null;
+    return (
+      <>
+        <style>{__TWEAKS_STYLE}</style>
+        <button type="button" className="twk-fab" aria-label={'Open ' + title}
+                onClick={() => setOpen(true)}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </button>
+      </>
+    );
+  }
   return (
     <>
       <style>{__TWEAKS_STYLE}</style>
